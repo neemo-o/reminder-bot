@@ -28,7 +28,7 @@ describe('ReminderScheduler - idempotência de entrega (delivery_log)', () => {
     db = initDb(dbPath);
     repo = new ReminderRepo(db);
     userId = new UserRepo(db).getOrCreateUser(PHONE, 'Tester').id;
-    sender = { sendMessage: vi.fn(async () => true) };
+    sender = { sendMessage: vi.fn(async () => 'msg-123') as any };
     scheduler = new ReminderScheduler({ reminderRepo: repo, sender });
   });
 
@@ -90,7 +90,39 @@ describe('ReminderScheduler - idempotência de entrega (delivery_log)', () => {
     sender.sendMessage.mockResolvedValue(true);
     await scheduler.processDueReminders(trigger + 1000);
     expect(sender.sendMessage).toHaveBeenCalledTimes(2);
+    expect(sender.sendMessage.mock.calls[1][2]).toBe(sender.sendMessage.mock.calls[0][2]);
     expect(repo.getReminderById(r.id)!.status).toBe('completed');
+  });
+
+  it('renova a concessão enquanto um envio demorado está em andamento', async () => {
+    const now = local(2026, 9, 16, 10, 0);
+    repo.createReminder({
+      userId,
+      phone: PHONE,
+      message: 'envio demorado',
+      triggerAt: now - 1000,
+    });
+
+    let finishSend!: (messageId: string) => void;
+    sender.sendMessage.mockImplementation(
+      () => new Promise<string>((resolve) => { finishSend = resolve; })
+    );
+    scheduler = new ReminderScheduler({ reminderRepo: repo, sender, maxIdleMs: 30 });
+
+    const firstRun = scheduler.processDueReminders(now);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    const competingScheduler = new ReminderScheduler({
+      reminderRepo: repo,
+      sender,
+      maxIdleMs: 30,
+    });
+    await competingScheduler.processDueReminders(now);
+    expect(sender.sendMessage).toHaveBeenCalledTimes(1);
+
+    finishSend('msg-delayed');
+    await firstRun;
+    expect(sender.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('delivery_log impede reentrega mesmo que o lembrete ainda esteja pendente (estado inconsistente)', async () => {

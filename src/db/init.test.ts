@@ -27,6 +27,12 @@ describe('initDb - chaves estrangeiras e integridade', () => {
     expect(r.foreign_keys).toBe(1);
   });
 
+  it('aplica as colunas de controle de entrega em um banco novo', () => {
+    const columns = db.pragma('table_info(delivery_log)') as Array<{ name: string }>;
+    expect(columns.map((column) => column.name)).toContain('whatsapp_msg_id');
+    expect(columns.map((column) => column.name)).toContain('lease_token');
+  });
+
   it('rejeita inserção de reminder com user_id inexistente (FK)', () => {
     const stmt = db.prepare(
       `INSERT INTO reminders (id, user_id, phone, message, trigger_at, status, created_at)

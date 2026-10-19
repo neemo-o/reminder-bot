@@ -19,10 +19,11 @@ const SESSION_DIR = './session';
 
 /**
  * Anything that can deliver a text message to a JID.
- * Returns false when the send was blocked (e.g. TEST_PHONE_NUMBER filter).
+ * Returns false when the send was blocked (e.g. TEST_PHONE_NUMBER filter),
+ * otherwise returns the WhatsApp message id for idempotency tracking.
  */
 export interface BotSender {
-  sendMessage(jid: string, text: string): Promise<boolean>;
+  sendMessage(jid: string, text: string, messageId?: string): Promise<string | false>;
 }
 
 export interface WhatsAppClient extends BotSender {
@@ -115,7 +116,7 @@ export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void):
     });
   }
 
-  async function sendMessage(jid: string, text: string): Promise<boolean> {
+  async function sendMessage(jid: string, text: string, requestedMessageId?: string): Promise<string | false> {
     // If destination is LID or passes phone filter, allow
     const isLid = jid.endsWith('@lid');
     if (!isLid && !isPhoneAllowed(jid, config.testPhoneNumber)) {
@@ -123,8 +124,13 @@ export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void):
       return false;
     }
     if (!sock) throw new Error('WhatsApp não conectado');
-    await sock.sendMessage(jid, { text });
-    return true;
+    const res = await sock.sendMessage(
+      jid,
+      { text },
+      requestedMessageId ? { messageId: requestedMessageId } : undefined
+    );
+    const messageId = res?.key?.id ?? null;
+    return messageId || false;
   }
 
   return {

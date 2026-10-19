@@ -108,4 +108,53 @@ describe('runMigrations - migrações versionadas', () => {
 
     try { fs.rmSync(emptyDir, { recursive: true, force: true }); } catch {}
   });
+
+  it('preserva dados de um banco legado ao aplicar migrações atuais', () => {
+    db.pragma('foreign_keys = ON');
+    db.exec(`
+      CREATE TABLE users (
+        id TEXT PRIMARY KEY,
+        phone TEXT UNIQUE NOT NULL,
+        name TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE reminders (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        message TEXT NOT NULL,
+        trigger_at INTEGER NOT NULL,
+        recurrence TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY(user_id) REFERENCES users(id)
+      );
+      CREATE TABLE delivery_log (
+        reminder_id TEXT NOT NULL,
+        trigger_at INTEGER NOT NULL,
+        delivered_at INTEGER NOT NULL,
+        whatsapp_msg_id TEXT,
+        lease_token TEXT,
+        status TEXT NOT NULL,
+        PRIMARY KEY (reminder_id, trigger_at),
+        FOREIGN KEY(reminder_id) REFERENCES reminders(id)
+      );
+      INSERT INTO users VALUES ('user-1', '5511999999999', 'Tester', 1);
+      INSERT INTO reminders VALUES ('reminder-1', 'user-1', '5511999999999', 'legacy', 2, NULL, 'pending', 1);
+      INSERT INTO delivery_log VALUES ('reminder-1', 2, 3, 'msg-1', NULL, 'delivered');
+    `);
+
+    runMigrations(db, path.resolve('src/db/migrations'));
+
+    expect(db.prepare('SELECT message FROM reminders WHERE id = ?').get('reminder-1')).toEqual({
+      message: 'legacy',
+    });
+    expect(db.prepare('SELECT whatsapp_msg_id FROM delivery_log WHERE reminder_id = ?').get('reminder-1')).toEqual({
+      whatsapp_msg_id: 'msg-1',
+    });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    expect(() =>
+      db.prepare(`UPDATE reminders SET status = 'invalid' WHERE id = 'reminder-1'`).run()
+    ).toThrow();
+  });
 });

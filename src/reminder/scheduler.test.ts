@@ -47,7 +47,7 @@ describe('ReminderScheduler.processDueReminders', () => {
     db = initDb(':memory:');
     repo = new ReminderRepo(db);
     userId = new UserRepo(db).getOrCreateUser(PHONE, 'Tester').id;
-    sender = { sendMessage: vi.fn(async () => true) };
+    sender = { sendMessage: vi.fn(async () => 'msg-123') as any };
     scheduler = new ReminderScheduler({ reminderRepo: repo, sender });
   });
 

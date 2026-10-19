@@ -16,5 +16,4 @@ Thumbs.db
 
 # Pasta de planos (não versionar)
 planos/
-migrations/
-
+/migrations/

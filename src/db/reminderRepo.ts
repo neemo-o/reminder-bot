@@ -17,11 +17,21 @@ interface DbReminderRow {
 function mapRowToReminder(row: DbReminderRow): Reminder {
   let recurrence: RecurrenceRule | null = null;
   if (row.recurrence) {
+    let parsed: unknown;
     try {
-      recurrence = JSON.parse(row.recurrence);
+      parsed = JSON.parse(row.recurrence);
     } catch {
-      recurrence = null;
+      throw new Error(
+        `Recorrência inválida no lembrete ${row.id}: não é um JSON válido`
+      );
     }
+    const validated = validateRecurrence(parsed);
+    if (!validated) {
+      throw new Error(
+        `Recorrência inválida no lembrete ${row.id}: ${row.recurrence}`
+      );
+    }
+    recurrence = validated;
   }
 
   return {
@@ -117,63 +127,117 @@ export class ReminderRepo {
   getDelivery(reminderId: string, triggerAt: number): {
     status: string;
     deliveredAt: number;
+    whatsappMsgId: string | null;
   } | null {
     const stmt = this.db.prepare(
-      'SELECT status, delivered_at FROM delivery_log WHERE reminder_id = ? AND trigger_at = ?'
+      'SELECT status, delivered_at, whatsapp_msg_id FROM delivery_log WHERE reminder_id = ? AND trigger_at = ?'
     );
     const row = stmt.get(reminderId, triggerAt) as {
       status: string;
       delivered_at: number;
+      whatsapp_msg_id: string | null;
     } | undefined;
     if (!row) return null;
-    return { status: row.status, deliveredAt: row.delivered_at };
+    return {
+      status: row.status,
+      deliveredAt: row.delivered_at,
+      whatsappMsgId: row.whatsapp_msg_id,
+    };
   }
 
   /**
    * Tenta reivindicar a entrega de um lembrete inserindo (ou recuperando) um
-   * registro no delivery_log. Retorna true se esta instância ficou responsável
-   * pelo envio; false se o lembrete já foi entregue ('delivered') neste
-   * trigger_at.
+   * registro no delivery_log. Retorna o token da concessão ou null se outra
+   * instância já estiver enviando ou a entrega já tiver sido concluída.
    *
-   * Linhas 'failed' ou 'sending' travadas são recuperadas para retry.
+   * - 'failed': pode ser re-clamado imediatamente.
+   * - 'sending': só pode ser re-clamado após maxIdleMs de ociosidade,
+   *   EVITAR que duas instâncias disputem o mesmo envio ativo.
+   * - Se já existe whatsapp_msg_id: nunca re-entrega.
+   *
+   * @param maxIdleMs tempo máximo (ms) de ociosidade antes de recuperar um
+   *                  registro 'sending'. Padrão: 5 minutos.
    */
-  claimDelivery(reminderId: string, triggerAt: number): boolean {
+  claimDelivery(
+    reminderId: string,
+    triggerAt: number,
+    maxIdleMs: number = 5 * 60 * 1000
+  ): string | null {
+    const cutoff = Date.now() - maxIdleMs;
+    const leaseToken = randomUUID();
+
+    // Se já existe um whatsapp_msg_id para este trigger, a mensagem já foi
+    // aceita pelo WhatsApp. Nunca re-entrega, independentemente do status.
+    const existing = this.getDelivery(reminderId, triggerAt);
+    if (existing && existing.whatsappMsgId) {
+      return null;
+    }
+
     const row = this.db.prepare(
-      `INSERT INTO delivery_log (reminder_id, trigger_at, delivered_at, status)
-       VALUES (?, ?, ?, 'sending')
+      `INSERT INTO delivery_log (reminder_id, trigger_at, delivered_at, lease_token, status)
+       VALUES (?, ?, ?, ?, 'sending')
        ON CONFLICT(reminder_id, trigger_at) DO UPDATE
-       SET delivered_at = excluded.delivered_at, status = 'sending'
-       WHERE delivery_log.status IN ('failed', 'sending')
+       SET delivered_at = excluded.delivered_at,
+           lease_token = excluded.lease_token,
+           status = 'sending'
+       WHERE delivery_log.status = 'failed'
+          OR (delivery_log.status = 'sending'
+              AND delivery_log.delivered_at < ?
+              AND delivery_log.whatsapp_msg_id IS NULL)
        RETURNING status`
-    ).get(reminderId, triggerAt, Date.now()) as { status: string } | undefined;
+    ).get(
+      reminderId,
+      triggerAt,
+      Date.now(),
+      leaseToken,
+      cutoff
+    ) as {
+      status: string;
+    } | undefined;
 
     // Se a linha existe mas está 'delivered', o UPDATE WHERE não casa e
     // RETURNING não retorna nada -> não entregamos de novo.
-    if (!row) return false;
-    return true;
+    if (!row) return null;
+    return leaseToken;
   }
 
-  /** Marca a entrega como concluída no delivery_log. */
-  completeDelivery(reminderId: string, triggerAt: number): void {
+  /** Renova uma reivindicação ainda pertencente a esta execução. */
+  heartbeatDelivery(reminderId: string, triggerAt: number, leaseToken: string): boolean {
+    const info = this.db.prepare(
+      `UPDATE delivery_log SET delivered_at = ?
+       WHERE reminder_id = ? AND trigger_at = ? AND status = 'sending' AND lease_token = ?`
+    ).run(Date.now(), reminderId, triggerAt, leaseToken);
+    return info.changes > 0;
+  }
+
+  /** Marca a entrega como concluída no delivery_log, registrando o messageId do WhatsApp. */
+  completeDelivery(
+    reminderId: string,
+    triggerAt: number,
+    leaseToken: string,
+    whatsappMsgId: string | null = null
+  ): void {
     this.db.prepare(
-      `UPDATE delivery_log SET status = 'delivered'
-       WHERE reminder_id = ? AND trigger_at = ? AND status = 'sending'`
-    ).run(reminderId, triggerAt);
+      `UPDATE delivery_log
+       SET status = 'delivered', whatsapp_msg_id = ?, lease_token = NULL
+       WHERE reminder_id = ? AND trigger_at = ? AND status = 'sending' AND lease_token = ?`
+    ).run(whatsappMsgId, reminderId, triggerAt, leaseToken);
   }
 
   /** Marca a entrega como falha no delivery_log (libera para nova tentativa). */
-  failDelivery(reminderId: string, triggerAt: number): void {
+  failDelivery(reminderId: string, triggerAt: number, leaseToken: string): void {
     this.db.prepare(
-      `UPDATE delivery_log SET status = 'failed'
-       WHERE reminder_id = ? AND trigger_at = ? AND status = 'sending'`
-    ).run(reminderId, triggerAt);
+      `UPDATE delivery_log SET status = 'failed', lease_token = NULL
+       WHERE reminder_id = ? AND trigger_at = ? AND status = 'sending' AND lease_token = ?`
+    ).run(reminderId, triggerAt, leaseToken);
   }
 
   /** Remove registros de envio abandonado (sending) mais velhos que maxIdleMs. */
   cleanupStuckSending(maxIdleMs: number): number {
     const cutoff = Date.now() - maxIdleMs;
     const info = this.db.prepare(
-      `DELETE FROM delivery_log WHERE status = 'sending' AND delivered_at < ?`
+      `DELETE FROM delivery_log
+       WHERE status = 'sending' AND delivered_at < ? AND whatsapp_msg_id IS NULL`
     ).run(cutoff);
     return info.changes;
   }
