@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import { ParseReminderResult, RecurrenceRule } from '../types/index.js';
 import { config } from '../utils/config.js';
 import { createAiClient } from './client.js';
+import { validateRecurrence } from '../reminder/recurrence.validate.js';
 
 export const SYSTEM_PROMPT = `Você é um assistente especialista em extrair lembretes de mensagens de texto em Português ou Inglês.
 Dada uma mensagem do usuário e o timestamp atual em milissegundos UTC (e/ou data ISO atual), identifique se o usuário deseja agendar um lembrete.
@@ -69,11 +70,12 @@ export async function parseReminder(
         const jsonStr = content.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
         const parsed = JSON.parse(jsonStr);
         if (typeof parsed.isReminderRequest === 'boolean') {
+          const recurrence = validateRecurrence(parsed.recurrence ?? null);
           return {
             isReminderRequest: parsed.isReminderRequest,
             message: parsed.message || '',
             trigger_at: Number(parsed.trigger_at) || 0,
-            recurrence: parsed.recurrence || null,
+            recurrence,
             confidence: Number(parsed.confidence) || 0.8,
           };
         }
@@ -285,11 +287,13 @@ export function parseReminderDeterministic(text: string, nowMs: number = Date.no
     extractedMessage = text;
   }
 
+  const recurrenceValid = validateRecurrence(recurrence ?? null);
+
   return {
     isReminderRequest: true,
     message: extractedMessage,
     trigger_at: triggerAt,
-    recurrence,
+    recurrence: recurrenceValid,
     confidence: 0.9,
   };
 }

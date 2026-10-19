@@ -11,6 +11,10 @@ data/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.DS_Store
+*.DS_Store
 Thumbs.db
+
+# Pasta de planos (não versionar)
+planos/
+migrations/
 
