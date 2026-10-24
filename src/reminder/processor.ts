@@ -11,6 +11,8 @@ export interface MessageProcessorDeps {
   sender: BotSender;
   /** If non-empty, only messages from this phone are accepted. */
   testPhoneNumber: string;
+  /** Optional getter to read the current filter value at runtime (reactive). */
+  getTestPhoneNumber?: () => string;
   /** Injectable for tests. Defaults to the real (LLM + fallback) parser. */
   parseFn?: (text: string, nowMs?: number) => Promise<ParseReminderResult>;
   getNow?: () => number;
@@ -71,6 +73,7 @@ export class MessageProcessor {
   private readonly reminderRepo: ReminderRepo;
   private readonly sender: BotSender;
   private readonly testPhoneNumber: string;
+  private readonly getTestPhoneNumber?: () => string;
   private readonly parseFn: (text: string, nowMs?: number) => Promise<ParseReminderResult>;
   private readonly getNow: () => number;
 
@@ -79,6 +82,7 @@ export class MessageProcessor {
     this.reminderRepo = deps.reminderRepo;
     this.sender = deps.sender;
     this.testPhoneNumber = deps.testPhoneNumber;
+    this.getTestPhoneNumber = deps.getTestPhoneNumber;
     this.parseFn = deps.parseFn ?? ((text: string, nowMs?: number) => parseReminder(text, nowMs));
     this.getNow = deps.getNow ?? Date.now;
   }
@@ -97,13 +101,14 @@ export class MessageProcessor {
       }
 
       // Test-number filter: check fromJid, senderPhone and senderPn (LID support)
+      const effectivePhone = this.getTestPhoneNumber ? this.getTestPhoneNumber() : this.testPhoneNumber;
       const allowed =
-        isPhoneAllowed(msg.fromJid, this.testPhoneNumber) ||
-        isPhoneAllowed(msg.senderPhone, this.testPhoneNumber) ||
-        (msg.senderPn ? isPhoneAllowed(msg.senderPn, this.testPhoneNumber) : false);
+        isPhoneAllowed(msg.fromJid, effectivePhone) ||
+        isPhoneAllowed(msg.senderPhone, effectivePhone) ||
+        (msg.senderPn ? isPhoneAllowed(msg.senderPn, effectivePhone) : false);
 
       if (!allowed) {
-        console.warn(`[processor] Mensagem ignorada por filtro TEST_PHONE_NUMBER (${msg.fromJid}). Permitido: ${this.testPhoneNumber || 'todos'}`);
+        console.warn(`[processor] Mensagem ignorada por filtro TEST_PHONE_NUMBER (${msg.fromJid}). Permitido: ${effectivePhone || 'todos'}`);
         return;
       }
 

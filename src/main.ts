@@ -5,6 +5,7 @@ import { initDb } from './db/init.js';
 import { UserRepo } from './db/userRepo.js';
 import { ReminderRepo } from './db/reminderRepo.js';
 import { createWhatsAppClient } from './whatsapp/client.js';
+import { createWebDashboard } from './web/dashboard.js';
 import { MessageProcessor } from './reminder/processor.js';
 import { ReminderScheduler } from './reminder/scheduler.js';
 
@@ -43,9 +44,25 @@ async function main(): Promise<void> {
   const userRepo = new UserRepo(db);
   const reminderRepo = new ReminderRepo(db);
 
+  // Servidor web do painel local (métricas + sessão WhatsApp).
+  const dashboard = createWebDashboard({ db, port: 3333 });
+  await dashboard.start();
+  logger.info(`Painel de controle: ${dashboard.url()}`);
+
   let processor: MessageProcessor | null = null;
-  const wa = createWhatsAppClient((msg) => {
-    void processor?.handleIncoming(msg);
+  const wa = createWhatsAppClient({
+    onMessage: (msg) => {
+      void processor?.handleIncoming(msg);
+    },
+    onQr: (qr) => {
+      dashboard.setQr(qr);
+    },
+    onConnected: (phone) => {
+      dashboard.setConnected(phone);
+    },
+    onDisconnected: () => {
+      dashboard.setDisconnected();
+    },
   });
 
   processor = new MessageProcessor({
@@ -53,6 +70,7 @@ async function main(): Promise<void> {
     reminderRepo,
     sender: wa,
     testPhoneNumber: config.testPhoneNumber,
+    getTestPhoneNumber: () => config.testPhoneNumber,
   });
 
   const scheduler = new ReminderScheduler({ reminderRepo, sender: wa });
@@ -64,6 +82,7 @@ async function main(): Promise<void> {
   const shutdown = (signal: string): void => {
     logger.info(`Recebido ${signal}. Encerrando...`);
     scheduler.stop();
+    dashboard.stop();
     void wa.stop();
     db.close();
     process.exit(0);

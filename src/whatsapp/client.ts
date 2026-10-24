@@ -7,7 +7,6 @@ import makeWASocket, {
   type WASocket,
   type proto,
 } from '@whiskeysockets/baileys';
-import qrcode from 'qrcode-terminal';
 import { mkdirSync } from 'fs';
 import pino from 'pino';
 import { config } from '../utils/config.js';
@@ -31,6 +30,17 @@ export interface WhatsAppClient extends BotSender {
   stop(): Promise<void>;
 }
 
+/** Callbacks opcionais para expor o estado da sessão a um painel web. */
+export interface WhatsAppClientCallbacks {
+  onMessage: (msg: IncomingMessage) => void;
+  /** Chamado sempre que o Baileys emite o código de emparelhamento (QR). */
+  onQr?: (qr: string) => void;
+  /** Chamado quando a conexão é aberta (sessão autenticada). */
+  onConnected?: (phone: string | null) => void;
+  /** Chamado quando a conexão é encerrada. */
+  onDisconnected?: () => void;
+}
+
 function extractText(message: proto.IMessage): string {
   const conversation = message.conversation as string | null | undefined;
   if (conversation) return conversation;
@@ -44,7 +54,7 @@ function extractText(message: proto.IMessage): string {
  * Only DM text messages are surfaced through onMessage; groups are still
  * delivered as IncomingMessage with isGroup=true so the processor can drop them.
  */
-export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void): WhatsAppClient {
+export function createWhatsAppClient(cb: WhatsAppClientCallbacks): WhatsAppClient {
   let sock: WASocket | null = null;
   let running = false;
 
@@ -69,11 +79,16 @@ export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void):
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
       if (qr) {
-        console.log('\nEscaneie o QR code abaixo no WhatsApp (Aparelhos conectados > Conectar aparelho):\n');
-        qrcode.generate(qr, { small: true });
+        // O QR é exposto ao painel web via callback; não imprime mais no console.
+        cb.onQr?.(qr);
       }
       if (connection === 'open') {
+        const userId = (sock?.user as { id?: string } | null | undefined)?.id;
+        const phone = userId && userId.endsWith('@s.whatsapp.net')
+          ? normalizePhone(userId.replace('@s.whatsapp.net', ''))
+          : userId ?? null;
         console.log('✅ WhatsApp conectado.');
+        cb.onConnected?.(phone);
       }
       if (connection === 'close') {
         const statusCode = (
@@ -82,10 +97,12 @@ export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void):
         if (statusCode === DisconnectReason.loggedOut) {
           console.error('❌ Sessão deslogada. Apague a pasta ./session e pareie novamente.');
           running = false;
+          cb.onDisconnected?.();
           return;
         }
         if (running) {
           console.log('Conexão fechada. Reconectando em 3s...', lastDisconnect?.error?.message ?? '');
+          cb.onDisconnected?.();
           setTimeout(() => {
             void connect();
           }, 3000);
@@ -102,7 +119,7 @@ export function createWhatsAppClient(onMessage: (msg: IncomingMessage) => void):
         const tsRaw = m.messageTimestamp;
         const timestamp = typeof tsRaw === 'number' && tsRaw > 0 ? tsRaw : Date.now();
         const senderPn = (m.key as any).senderPn || (m.key as any).participantPn;
-        onMessage({
+        cb.onMessage({
           id: m.key.id ?? '',
           fromJid,
           senderPhone: normalizePhone(senderPn || fromJid),
