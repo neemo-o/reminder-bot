@@ -201,7 +201,7 @@ export function parseReminderDeterministic(text: string, nowMs: number = Date.no
   }
 
   // Relative offset: "daqui a X minutos/horas/dias" or "in X minutes/hours/days"
-  const relativeMatch = lower.match(/(?:daqui a|em|in)\s*(\d+)\s*(minuto|minutos|min|m|hora|horas|h|dia|dias|d)/i);
+  const relativeMatch = lower.match(/(?:daqui a|em|in)\s*(\d+)\s*(minuto|minutos|min|hora|horas|h|dia|dias)\b/i);
   if (relativeMatch) {
     const amount = parseInt(relativeMatch[1], 10);
     const unit = relativeMatch[2].toLowerCase();
@@ -227,6 +227,108 @@ export function parseReminderDeterministic(text: string, nowMs: number = Date.no
       d.setHours(9, 0, 0, 0);
     }
     triggerAt = d.getTime();
+  }
+
+  // Next weekday names (Portuguese)
+  const DAYS_OF_WEEK: Record<string, number> = {
+    domingo: 0, segunda: 1, terça: 2, terca: 2, quarta: 3,
+    quinta: 4, sexta: 5, sábado: 6, sabado: 6,
+  };
+
+  // "daqui a N semanas"
+  const weeksMatch = lower.match(/(?:daqui a|em|in)\s*(\d+)\s*(semana|semanas|week|weeks)/i);
+  if (weeksMatch && triggerAt === nowMs) {
+    const amount = parseInt(weeksMatch[1], 10);
+    triggerAt = nowMs + amount * 7 * 24 * 3600 * 1000;
+  }
+
+  // "daqui a N domingos/segundas/..." (e.g. "daqui a 2 domingos")
+  const weeksDayMatch = lower.match(
+    /(?:daqui a|em|in)\s*(\d+)\s*(domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado|domingos|segundas|terças|tercas|quartas|quintas|sextas|sábados|sabados)/i
+  );
+  if (weeksDayMatch && triggerAt === nowMs) {
+    const amount = parseInt(weeksDayMatch[1], 10);
+    const rawName = weeksDayMatch[2].toLowerCase().replace(/s$/, '');
+    const targetDow = DAYS_OF_WEEK[rawName];
+    if (targetDow !== undefined) {
+      let d = new Date(nowMs);
+      let found = false;
+      for (let i = 1; i <= 7; i++) {
+        const cand = new Date(nowMs);
+        cand.setDate(cand.getDate() + i);
+        if (cand.getDay() === targetDow && cand.getTime() > nowMs) {
+          d = cand;
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        d.setDate(d.getDate() + (amount - 1) * 7);
+        if (time) {
+          d.setHours(time.h, time.m, 0, 0);
+          if (d.getTime() <= nowMs) {
+            d.setDate(d.getDate() + 7);
+          }
+        }
+        triggerAt = d.getTime();
+      }
+    }
+  }
+
+  // "próximo X", "proximo X", "no X", "na X", "em X", or bare "X" (isolated weekday)
+  const dayNames = Object.keys(DAYS_OF_WEEK);
+  const isRecurringDay = dayNames.some(
+    (name) => lower.includes(`todo ${name}`) || lower.includes(`toda ${name}`)
+  );
+  if (!isRecurringDay && triggerAt === nowMs) {
+    // "próximo X" / "proximo X"
+    const nextDayMatch = lower.match(/(?:próximo|proximo)\s+(domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado)/i);
+    // "no X" / "na X" / "em X"
+    const onDayMatch = lower.match(/(?:no|na|em)\s+(domingo|segunda|terça|terca|quarta|quinta|sexta|sábado|sabado)/i);
+
+    let targetDow: number | null = null;
+    let matchedName: string | null = null;
+
+    if (nextDayMatch) {
+      matchedName = nextDayMatch[1];
+    } else if (onDayMatch) {
+      matchedName = onDayMatch[1];
+    } else {
+      // Bare weekday name (isolated word)
+      for (const name of dayNames) {
+        if (new RegExp(`\\b${name}\\b`, 'i').test(lower)) {
+          matchedName = name;
+          break;
+        }
+      }
+    }
+
+    if (matchedName) {
+      targetDow = DAYS_OF_WEEK[matchedName.toLowerCase().replace(/s$/, '')];
+    }
+
+    if (targetDow !== null) {
+      const d = new Date(nowMs);
+      let found = false;
+      for (let i = 1; i <= 7; i++) {
+        const cand = new Date(nowMs);
+        cand.setDate(cand.getDate() + i);
+        if (cand.getDay() === targetDow && cand.getTime() > nowMs) {
+          d.setDate(cand.getDate());
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        if (time) {
+          d.setHours(time.h, time.m, 0, 0);
+          if (d.getTime() <= nowMs) {
+            d.setDate(d.getDate() + 7);
+          }
+        }
+        triggerAt = d.getTime();
+      }
+    }
   }
 
   // Specific day of month: "dia DD deste mês" or "dia DD"

@@ -107,6 +107,63 @@ describe('parseReminderDeterministic', () => {
     expect(r.isReminderRequest).toBe(true);
     expect(r.trigger_at).toBe(local(2026, 9, 17, 9, 0));
   });
+
+  it('"próximo domingo" dispara no próximo domingo', () => {
+    const r = parseReminderDeterministic('me lembre próximo domingo que eu tenho médico', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    // NOW é sexta 16/10 -> próximo domingo é 18/10, mantém horário 10:00
+    expect(r.trigger_at).toBe(local(2026, 9, 18, 10, 0));
+  });
+
+  it('"proximo domingo" (sem acento) também funciona', () => {
+    const r = parseReminderDeterministic('me lembre proximo domingo', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(local(2026, 9, 18, 10, 0));
+  });
+
+  it('"no domingo" dispara no próximo domingo', () => {
+    const r = parseReminderDeterministic('me lembre no domingo que tenho consulta', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(local(2026, 9, 18, 10, 0));
+  });
+
+  it('"domingo" isolado dispara no próximo domingo', () => {
+    const r = parseReminderDeterministic('me lembre domingo', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(local(2026, 9, 18, 10, 0));
+  });
+
+  it('"próxima segunda" dispara na próxima segunda', () => {
+    const r = parseReminderDeterministic('me lembre próxima segunda', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    // NOW é sexta 16/10 -> próxima segunda é 19/10
+    expect(r.trigger_at).toBe(local(2026, 9, 19, 10, 0));
+  });
+
+  it('"daqui a 2 semanas" dispara daqui a 14 dias', () => {
+    const r = parseReminderDeterministic('me lembre daqui a 2 semanas', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(local(2026, 9, 30, 10, 0));
+  });
+
+  it('"daqui a 2 domingos" dispara em 2 domingos', () => {
+    const r = parseReminderDeterministic('me lembre daqui a 2 domingos', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    // Próximo domingo é 18/10, + 7 dias = 25/10
+    expect(r.trigger_at).toBe(local(2026, 9, 25, 10, 0));
+  });
+
+  it('"próximo domingo às 15h" aplica o horário', () => {
+    const r = parseReminderDeterministic('me lembre próximo domingo às 15h', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(local(2026, 9, 18, 15, 0));
+  });
+
+  it('"todo domingo" ainda é recorrência semanal (não vira dia único)', () => {
+    const r = parseReminderDeterministic('me lembre todo domingo', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.recurrence).toEqual({ type: 'weekly', daysOfWeek: [0] });
+  });
 });
 
 describe('extractTime', () => {
