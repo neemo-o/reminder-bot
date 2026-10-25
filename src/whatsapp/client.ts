@@ -6,12 +6,14 @@ import makeWASocket, {
   Browsers,
   type WASocket,
   type proto,
+  downloadMediaMessage,
+  type MediaDownloadOptions,
 } from '@whiskeysockets/baileys';
 import { mkdirSync } from 'fs';
 import pino from 'pino';
 import { config } from '../utils/config.js';
 import { isPhoneAllowed, normalizePhone } from '../utils/phone.js';
-import type { IncomingMessage } from '../types/index.js';
+import type { IncomingMessage, AudioMedia } from '../types/index.js';
 
 const waLogger = pino({ level: 'silent' });
 const SESSION_DIR = './session';
@@ -41,11 +43,62 @@ export interface WhatsAppClientCallbacks {
   onDisconnected?: () => void;
 }
 
+/**
+ * Detecta se a mensagem contém áudio ou voz e retorna o tipo de mídia.
+ * WhatsApp usa `audioMessage` tanto para áudio quanto para mensagens de voz.
+ * `voiceMessage: true` dentro de `audioMessage` distingue mensagem de voz.
+ */
+function detectMediaType(message: proto.IMessage): 'audio' | 'voice' | null {
+  const audio = message.audioMessage as proto.Message.IAudioMessage | undefined;
+  if (!audio) return null;
+  return audio.ptt === true ? 'voice' : 'audio';
+}
+
+/**
+ * Extrai texto de mensagens de texto. Para mensagens de áudio/voz, retorna
+ * vazio (o texto virá da transcrição posterior).
+ */
 function extractText(message: proto.IMessage): string {
   const conversation = message.conversation as string | null | undefined;
   if (conversation) return conversation;
   const extended = message.extendedTextMessage?.text as string | null | undefined;
   return extended ?? '';
+}
+
+/**
+ * Baixa o mídia de áudio de uma mensagem do WhatsApp e retorna o buffer
+ * descriptografado, ou null se não houver áudio ou falha no download.
+ *
+ * @param message WAMessage completo (precisa de `key` para descriptografar o mídia).
+ *                Passar apenas o conteúdo (proto.IMessage) causa erro "bad MAC".
+ */
+async function downloadAudio(
+  message: any,
+): Promise<AudioMedia | null> {
+  const audio = message.message?.audioMessage as proto.Message.IAudioMessage | undefined;
+  if (!audio) return null;
+
+  try {
+    // downloadMediaMessage descriptografa e retorna o buffer do mídia.
+    // Requer que a mensagem tenha `key` e `message` preenchidos (WAMessage).
+    const buffer = await downloadMediaMessage(
+      message,
+      'buffer',
+      {},
+      { logger: waLogger } as any,
+    );
+    const mimeType = audio.mimetype ?? 'audio/ogg; codecs=opus';
+    const fileName = `audio.${mimeType.includes('opus') ? 'ogg' : 'bin'}`;
+    return {
+      buffer: Buffer.from(buffer),
+      mimeType,
+      fileName,
+      seconds: audio.seconds ?? undefined,
+    };
+  } catch (err: any) {
+    console.warn(`[wa] falha ao baixar áudio da mensagem: ${err?.message ?? err}`);
+    return null;
+  }
 }
 
 /**
@@ -110,7 +163,7 @@ export function createWhatsAppClient(cb: WhatsAppClientCallbacks): WhatsAppClien
       }
     });
 
-    sock.ev.on('messages.upsert', ({ messages, type }) => {
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (type !== 'notify') return;
       for (const m of messages) {
         if (!m.message || m.key.fromMe) continue;
@@ -119,6 +172,22 @@ export function createWhatsAppClient(cb: WhatsAppClientCallbacks): WhatsAppClien
         const tsRaw = m.messageTimestamp;
         const timestamp = typeof tsRaw === 'number' && tsRaw > 0 ? tsRaw : Date.now();
         const senderPn = (m.key as any).senderPn || (m.key as any).participantPn;
+
+        const mediaType = detectMediaType(m.message);
+        let audio: AudioMedia | null = null;
+        let text = extractText(m.message);
+
+        if (mediaType && sock) {
+          // Baixa o áudio para transcrição posterior.
+          // IMPORTANTE: downloadMediaMessage precisa do WAMessage completo (com key)
+          // para descriptografar o mídia. Passar apenas m.message causa "bad MAC".
+          audio = await downloadAudio(m as any);
+          if (!audio) {
+            // Se falhou ao baixar, não há o que transcrever
+            text = '';
+          }
+        }
+
         cb.onMessage({
           id: m.key.id ?? '',
           fromJid,
@@ -126,8 +195,10 @@ export function createWhatsAppClient(cb: WhatsAppClientCallbacks): WhatsAppClien
           isGroup: fromJid.endsWith('@g.us') || !!m.key.participant,
           participant: m.key.participant ?? undefined,
           senderPn,
-          text: extractText(m.message),
+          text,
           timestamp,
+          mediaType,
+          audio,
         });
       }
     });

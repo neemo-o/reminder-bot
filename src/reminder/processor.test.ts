@@ -20,8 +20,11 @@ function makeMsg(phone: string, text: string, isGroup = false): IncomingMessage 
     senderPhone: phone,
     isGroup,
     participant: isGroup ? `${PHONE}@s.whatsapp.net` : undefined,
+    senderPn: undefined,
     text,
     timestamp: NOW,
+    mediaType: null,
+    audio: null,
   };
 }
 

@@ -3,7 +3,14 @@ import { ReminderRepo } from '../db/reminderRepo.js';
 import { parseReminder } from '../ai/parseReminder.js';
 import { isPhoneAllowed } from '../utils/phone.js';
 import type { BotSender } from '../whatsapp/client.js';
-import type { IncomingMessage, ParseReminderResult, RecurrenceRule, Reminder } from '../types/index.js';
+import type {
+  IncomingMessage,
+  AudioMedia,
+  ParseReminderResult,
+  RecurrenceRule,
+  Reminder,
+} from '../types/index.js';
+import type { Transcriber } from '../audio/transcriber.js';
 
 export interface MessageProcessorDeps {
   userRepo: UserRepo;
@@ -13,6 +20,9 @@ export interface MessageProcessorDeps {
   testPhoneNumber: string;
   /** Optional getter to read the current filter value at runtime (reactive). */
   getTestPhoneNumber?: () => string;
+  /** Optional local audio transcriber. When provided, audio/voice messages are
+   *  transcribed locally before reminder parsing. */
+  audioTranscriber?: Transcriber;
   /** Injectable for tests. Defaults to the real (LLM + fallback) parser. */
   parseFn?: (text: string, nowMs?: number) => Promise<ParseReminderResult>;
   getNow?: () => number;
@@ -20,7 +30,7 @@ export interface MessageProcessorDeps {
 
 export const HELP_TEXT = `🤖 *Bot de Lembretes*
 
-Envie uma mensagem descrevendo o que você quer lembrar:
+Envie uma mensagem de texto ou áudio descrevendo o que você quer lembrar:
 
 • "me lembre de tomar remédio daqui a 2 horas"
 • "lembre me da reunião amanhã 10h"
@@ -28,6 +38,9 @@ Envie uma mensagem descrevendo o que você quer lembrar:
 • "me avise todo dia às 8h pra tomar café"
 • "toda segunda às 19h academia"
 • "a cada 2 horas beber água"
+
+Você também pode enviar um *áudio* (mensagem de voz) dizendo o lembrete;
+o bot transcreve localmente e agenda o lembrete.
 
 Comandos:
 • meus lembretes — lista os lembretes ativos
@@ -76,6 +89,7 @@ export class MessageProcessor {
   private readonly getTestPhoneNumber?: () => string;
   private readonly parseFn: (text: string, nowMs?: number) => Promise<ParseReminderResult>;
   private readonly getNow: () => number;
+  private readonly audioTranscriber?: Transcriber;
 
   constructor(deps: MessageProcessorDeps) {
     this.userRepo = deps.userRepo;
@@ -85,6 +99,7 @@ export class MessageProcessor {
     this.getTestPhoneNumber = deps.getTestPhoneNumber;
     this.parseFn = deps.parseFn ?? ((text: string, nowMs?: number) => parseReminder(text, nowMs));
     this.getNow = deps.getNow ?? Date.now;
+    this.audioTranscriber = deps.audioTranscriber;
   }
 
   /**
@@ -112,6 +127,13 @@ export class MessageProcessor {
         return;
       }
 
+      // Mensagem de áudio/voz: transcreve localmente antes de processar como lembrete
+      if (msg.audio && (msg.mediaType === 'audio' || msg.mediaType === 'voice')) {
+        const audio = msg.audio;
+        await this.handleAudioReminderRequest(msg, audio);
+        return;
+      }
+
       const text = msg.text.trim();
       if (!text) return;
 
@@ -132,7 +154,10 @@ export class MessageProcessor {
         return;
       }
 
-      await this.handleReminderRequest(msg, text);
+      const created = await this.handleReminderRequest(msg, text);
+      if (!created) {
+        await this.sender.sendMessage(msg.fromJid, HELP_TEXT);
+      }
     } catch (err) {
       console.error('[processor] erro ao processar mensagem:', err);
       try {
@@ -143,13 +168,78 @@ export class MessageProcessor {
     }
   }
 
-  private async handleReminderRequest(msg: IncomingMessage, text: string): Promise<void> {
+  /**
+   * Processa uma mensagem de áudio/voz: transcreve localmente e, se o texto
+   * resultando for um pedido de lembrete, cria o lembrete.
+   */
+  private async handleAudioReminderRequest(msg: IncomingMessage, audio: AudioMedia): Promise<void> {
+    if (!this.audioTranscriber) {
+      await this.sender.sendMessage(
+        msg.fromJid,
+        '❌ Recebi seu áudio, mas o bot não está configurado com um transcritor local. Envie o lembrete por texto.',
+      );
+      return;
+    }
+
+    const available = await this.audioTranscriber.isAvailable();
+    if (!available) {
+      await this.sender.sendMessage(
+        msg.fromJid,
+        '❌ O transcritor de áudio não está disponível no momento. Envie o lembrete por texto.',
+      );
+      return;
+    }
+
+    try {
+      // Avisa que está processando o áudio
+      await this.sender.sendMessage(msg.fromJid, '🎧 Recebi seu áudio. Transcrevendo localmente...');
+
+      const { text, language } = await this.audioTranscriber.transcribe(
+        audio.buffer,
+        audio.mimeType,
+      );
+
+      if (!text || text.length === 0) {
+        await this.sender.sendMessage(
+          msg.fromJid,
+          '❌ Não consegui transcrever o áudio. Tente enviar o lembrete por texto.',
+        );
+        return;
+      }
+
+      // Informa o usuário da transcrição antes de criar o lembrete
+      await this.sender.sendMessage(
+        msg.fromJid,
+        `📝 Transcrição: "${text}"\n\nProcessando como lembrete...`,
+      );
+
+      // Agora processa o texto transcrito como pedido de lembrete
+      const created = await this.handleReminderRequest(msg, text);
+      if (!created) {
+        await this.sender.sendMessage(
+          msg.fromJid,
+          `📝 Transcrição: "${text}"\n\n` +
+            `Não reconheci isso como um pedido de lembrete. Tente dizer algo como:\n` +
+            `• "me lembre de tomar remédio daqui a 2 horas"\n` +
+            `• "lembre da reunião amanhã 10h"\n` +
+            `• "me avise todo dia às 8h"`,
+        );
+      }
+    } catch (err) {
+      console.error('[processor] erro ao transcrever áudio:', err);
+      await this.sender.sendMessage(
+        msg.fromJid,
+        '❌ Erro ao transcrever o áudio. Tente enviar o lembrete por texto.',
+      );
+    }
+  }
+
+  private async handleReminderRequest(msg: IncomingMessage, text: string): Promise<boolean> {
     const now = this.getNow();
     const parsed = await this.parseFn(text, now);
 
     if (!parsed.isReminderRequest || parsed.trigger_at <= now) {
-      await this.sender.sendMessage(msg.fromJid, HELP_TEXT);
-      return;
+      return false;
     }
 
     const user = this.userRepo.getOrCreateUser(msg.senderPhone, undefined);
@@ -162,6 +252,7 @@ export class MessageProcessor {
     });
 
     await this.sender.sendMessage(msg.fromJid, formatConfirmation(reminder));
+    return true;
   }
 
   private async listReminders(msg: IncomingMessage): Promise<void> {

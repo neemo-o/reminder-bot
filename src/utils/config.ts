@@ -8,6 +8,14 @@ export interface Config {
   testPhoneNumber: string;
   databasePath: string;
   logLevel: string;
+  /** Caminho do binário ffmpeg (para conversão de áudio). */
+  ffmpegPath: string;
+  /** Habilita/desabilita transcrição local de áudio. */
+  audioTranscriptionEnabled: boolean;
+  /** Modelo Whisper usado para transcrição local. */
+  whisperModel: string;
+  /** Idioma forçado na transcrição (ex: 'portuguese', 'english' ou undefined). */
+  whisperLanguage: string | undefined;
 }
 
 export const config: Config = {
@@ -17,4 +25,9 @@ export const config: Config = {
   testPhoneNumber: process.env.TEST_PHONE_NUMBER || '',
   databasePath: process.env.DATABASE_PATH || 'reminder_bot.db',
   logLevel: process.env.LOG_LEVEL || 'info',
+  ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
+  audioTranscriptionEnabled:
+    process.env.AUDIO_TRANSCRIPTION_ENABLED !== 'false',
+  whisperModel: process.env.WHISPER_MODEL || 'Xenova/whisper-small',
+  whisperLanguage: process.env.WHISPER_LANGUAGE || undefined,
 };

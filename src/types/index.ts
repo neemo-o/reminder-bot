@@ -33,4 +33,4 @@ export interface ParseReminderResult {
   isReminderRequest: boolean;
 }
 
-export type { IncomingMessage } from './whatsapp.js';
+export type { IncomingMessage, AudioMedia } from './whatsapp.js';

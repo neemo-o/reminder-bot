@@ -8,6 +8,8 @@ import { createWhatsAppClient } from './whatsapp/client.js';
 import { createWebDashboard } from './web/dashboard.js';
 import { MessageProcessor } from './reminder/processor.js';
 import { ReminderScheduler } from './reminder/scheduler.js';
+import { WhisperTranscriber, FakeTranscriber } from './audio/transcriber.js';
+import { ensureFfmpegAvailable } from './audio/audio-converter.js';
 
 const logger = pino({ level: config.logLevel, transport: { target: 'pino-pretty' } });
 
@@ -44,6 +46,41 @@ async function main(): Promise<void> {
   const userRepo = new UserRepo(db);
   const reminderRepo = new ReminderRepo(db);
 
+  // Verifica disponibilidade do ffmpeg para conversão de áudio
+  try {
+    await ensureFfmpegAvailable();
+    logger.info(`✅ ffmpeg disponível: ${config.ffmpegPath}`);
+  } catch (err: any) {
+    logger.warn(
+      `⚠️ ffmpeg não encontrado (${config.ffmpegPath}). Áudios não poderão ser convertidos para transcrição. Erro: ${err?.message ?? err}`,
+    );
+  }
+
+  // Transcritor local de áudio (Whisper via @xenova/transformers)
+  let audioTranscriber: WhisperTranscriber | FakeTranscriber | undefined;
+  if (config.audioTranscriptionEnabled) {
+    try {
+      audioTranscriber = new WhisperTranscriber({
+        modelName: config.whisperModel,
+        language: config.whisperLanguage,
+      });
+      const ok = await audioTranscriber.isAvailable();
+      if (ok) {
+        logger.info(`✅ Transcritor Whisper inicializado (modelo: ${config.whisperModel})`);
+      } else {
+        logger.warn('⚠️ WhisperTranscriber não pôde ser inicializado. Áudios não serão transcritos.');
+        audioTranscriber = undefined;
+      }
+    } catch (err: any) {
+      logger.warn(
+        `⚠️ Falha ao inicializar WhisperTranscriber: ${err?.message ?? err}. Áudios não serão transcritos.`,
+      );
+      audioTranscriber = undefined;
+    }
+  } else {
+    logger.info('Transcrição de áudio desabilitada via AUDIO_TRANSCRIPTION_ENABLED=false');
+  }
+
   // Servidor web do painel local (métricas + sessão WhatsApp).
   const dashboard = createWebDashboard({ db, port: 3333 });
   await dashboard.start();
@@ -71,6 +108,7 @@ async function main(): Promise<void> {
     sender: wa,
     testPhoneNumber: config.testPhoneNumber,
     getTestPhoneNumber: () => config.testPhoneNumber,
+    audioTranscriber,
   });
 
   const scheduler = new ReminderScheduler({ reminderRepo, sender: wa });

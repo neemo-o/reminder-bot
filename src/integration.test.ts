@@ -15,13 +15,16 @@ const START = new Date(2026, 9, 16, 10, 0, 0, 0).getTime();
 
 function makeMsg(text: string): IncomingMessage {
   return {
-    id: 'msg-e2e',
+    id: `msg-${Math.random().toString(36).slice(2)}`,
     fromJid: `${PHONE}@s.whatsapp.net`,
     senderPhone: PHONE,
     isGroup: false,
     participant: undefined,
+    senderPn: undefined,
     text,
-    timestamp: START,
+    timestamp: Date.now(),
+    mediaType: null,
+    audio: null,
   };
 }
 

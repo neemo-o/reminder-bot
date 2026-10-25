@@ -102,6 +102,24 @@ describe('parseReminderDeterministic', () => {
     expect(r.isReminderRequest).toBe(false);
   });
 
+  it('frase sem palavra-chave mas com hora vira lembrete (áudio transcrito)', () => {
+    const r = parseReminderDeterministic('tomar remédio às 14h', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBeGreaterThan(NOW);
+  });
+
+  it('frase com "daqui a X horas" sem palavra-chave vira lembrete', () => {
+    const r = parseReminderDeterministic('beber água daqui a 30 minutos', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBe(NOW + 30 * 60 * 1000);
+  });
+
+  it('frase com amanhã sem palavra-chave vira lembrete', () => {
+    const r = parseReminderDeterministic('reunião amanhã 10h', NOW);
+    expect(r.isReminderRequest).toBe(true);
+    expect(r.trigger_at).toBeGreaterThan(NOW);
+  });
+
   it('"lembrar de comprar 2 pizzas amanhã" não confunde "2" com hora', () => {
     const r = parseReminderDeterministic('lembrar de comprar 2 pizzas amanhã', NOW);
     expect(r.isReminderRequest).toBe(true);

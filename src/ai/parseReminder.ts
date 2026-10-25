@@ -139,14 +139,27 @@ export function parseReminderDeterministic(text: string, nowMs: number = Date.no
 
   // Check keywords for reminder intent
   const reminderKeywords = [
-    'lembre', 'lembra', 'lembrar', 'agende', 'agendar', 'remind', 'me avise', 'avisar',
+    'lembre', 'lembra', 'lembrar', 'lembrete', 'agende', 'agendar', 'remind',
+    'me avise', 'avisar', 'avise', 'notificar', 'preciso', 'não esquecer',
+    'não esqueça', 'lembrar de', 'marcar', 'alarme', 'programar',
     'daqui a', 'amanhã', 'amanha', 'todo dia', 'toda segunda', 'toda terça',
     'toda quarta', 'toda quinta', 'toda sexta', 'todo sábado', 'todo sabado',
-    'todo domingo', 'a cada'
+    'todo domingo', 'a cada',
   ];
 
   const hasKeyword = reminderKeywords.some((kw) => lower.includes(kw));
-  if (!hasKeyword) {
+
+  // Heurística para áudios transcritos: se não há palavra-chave explícita
+  // mas há indicação de tempo (hora, "daqui a", "amanhã", dia da semana),
+  // considera como possível pedido de lembrete.
+  const hasTimeIndicator =
+    extractTime(lower) !== null ||
+    /daqui a\s*\d+\s*(minuto|minutos|min|hora|horas|h|dia|dias)/i.test(lower) ||
+    /amanh[ãa]|\bamanha\b/i.test(lower) ||
+    /\b(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)\b/i.test(lower) ||
+    /\b(dia\s*\d{1,2})\b/i.test(lower);
+
+  if (!hasKeyword && !hasTimeIndicator) {
     return {
       isReminderRequest: false,
       message: text,
